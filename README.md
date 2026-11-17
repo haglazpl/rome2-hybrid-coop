@@ -69,4 +69,4 @@ Creative Assembly's file and so is not included here.
 - **Diplomacy.** There is one negotiation at a time, and the partner's diplomacy screen is closed by the game's
   own close path.
 
-Third-party code: [Monocypher](third_party/monocypher) 4.0.2 (BSD-2-Clause / CC0), used only to check the signature.
+Licence: [MIT](LICENSE). Third-party code: [Monocypher](third_party/monocypher) 4.0.2 (BSD-2-Clause / CC0), used only to check the signature.
