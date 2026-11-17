@@ -14,7 +14,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Install tools (clang, lld, llvm)
         run: sudo apt-get update && sudo apt-get install -y clang lld llvm
@@ -26,7 +26,10 @@ jobs:
           ./test_hook
 
       - name: Build DLLs
-        run: tools/build.sh
+        run: |
+          # release tags give the version (v0.1.0); other builds are dev-<commit>
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then export HC_VERSION="$GITHUB_REF_NAME"; else export HC_VERSION="dev-${GITHUB_SHA::7}"; fi
+          tools/build.sh
 
       - name: Sign the co-op DLL
         if: github.event_name != 'pull_request'
@@ -40,7 +43,7 @@ jobs:
           rm -f "$RUNNER_TEMP/key.pem"
           cd out && sha256sum dinput8.dll hybrid_coop.dll hybrid_coop.dll.sig | tee SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: hybrid-coop-${{ github.sha }}
           path: |

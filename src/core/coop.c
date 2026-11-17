@@ -3,7 +3,10 @@
 #include "hook.h"
 #include "ccq_names.h"
 
-#define VERSION_TEXT "hybrid_coop native v1 (= probe v22)"
+#ifndef HC_VERSION
+#define HC_VERSION "dev"            /* set by tools/build.sh from the release tag */
+#endif
+#define VERSION_TEXT "Hybrid Co-op core " HC_VERSION
 #define EMPIRE_TIMESTAMP 0x69ce2041u
 #define IMG 0x10000000u
 
@@ -57,6 +60,11 @@ static void logs(const char *msg) {
   log_raw(msg);
 }
 #define LOG(...) do { char _b[1100]; wsprintfA(_b, __VA_ARGS__); logs(_b); } while (0)
+
+/* 16-bit id of this build, sent inside every command tag: both players must run the same build, otherwise the
+   two simulations would follow different rules (desync). A different id from the other PC = warning. */
+static u16 build_id(void) { u32 h = fnv(HC_VERSION); u16 v = (u16)(h ^ (h >> 16)); return v ? v : 1; }
+static u32 g_otherBuild;            /* first different build id seen in a command from the other PC (0 = none) */
 
 /* ---------------------------------------------------------------- game state */
 static u32 ctrl, model;
@@ -173,8 +181,9 @@ static void emitStatus(void) {
   for (int i = 0; i < n; i++) if (hs[i] != l) { nf++; if (readyHas(hs[i])) nfr++; }
   int friendsReady = nf > 0 && nfr == nf;
   char line[96];
-  wsprintfA(line, "stage=%s;you=%d;friend=%d;diplo=%s", shared ? "shared" : (isHuman(cur) ? "human" : "ai"),
-            readyHas(l) ? 1 : 0, friendsReady ? 1 : 0, !diplo.active ? "" : (diplo.active == l ? "you" : "friend"));
+  wsprintfA(line, "stage=%s;you=%d;friend=%d;diplo=%s;warn=%s", shared ? "shared" : (isHuman(cur) ? "human" : "ai"),
+            readyHas(l) ? 1 : 0, friendsReady ? 1 : 0, !diplo.active ? "" : (diplo.active == l ? "you" : "friend"),
+            g_otherBuild ? "version" : "");
   if (!seq(line, g_lastStatus)) {
     mcpy(g_lastStatus, line, slen(line) + 1);
     write_status(line);
@@ -359,14 +368,14 @@ static int cmd_begin_write_enter(Hook *h, Ctx *c, Frame *f) {
   if (len + TAG_LEN + 0x100 > 0x5000) return 0;
   u8 *r = (u8 *)(buf + len);
   *(u16 *)r = TAG_LEN; r[2] = 0x48; r[3] = 0x59; r[4] = 0x42; r[5] = 0x31;
-  r[6] = 0; *(u16 *)(r + 7) = (u16)slot; *(u16 *)(r + 9) = 0; *(u32 *)(r + 11) = rd(l, 4);
+  r[6] = 0; *(u16 *)(r + 7) = (u16)slot; *(u16 *)(r + 9) = build_id(); *(u32 *)(r + 11) = rd(l, 4);
   *(u32 *)(buf + 0x5000) = len + TAG_LEN;
   if (tagged++ < 3) LOG("TAG outgoing command as %s slot=%d", label(l), slot);
   return 0;
 }
 
 /* ---- (b) execute tagged commands as the sending faction ---- */
-static u32 taggedActor(u32 batch, u32 off, u32 w) {
+static u32 taggedActor(u32 batch, u32 off, u32 w, u32 *build) {
   u32 total = *(u32 *)(batch + 0x5004);
   if (total > 0x5000 || off > total) return 0;
   u32 o = 0; i32 prev = -1;
@@ -375,6 +384,7 @@ static u32 taggedActor(u32 batch, u32 off, u32 w) {
   u32 r = batch + 4 + (u32)prev;
   if (rd16(r, 0) != TAG_LEN || rd8(r, 2) != 0x48 || rd8(r, 3) != 0x59 || rd8(r, 4) != 0x42 || rd8(r, 5) != 0x31) return 0;
   u32 slot = rd16(r, 7), id = rd(r, 11);
+  *build = rd16(r, 9);
   i32 n = rds(w, 0x50); u32 arr = rd(w, 0x54);
   if ((i32)slot < n) { u32 fa = rd(arr, slot * 4); if (fa && rd(fa, 4) == id) return fa; }
   for (i32 i = 0; i < n && i < 2000; i++) { u32 fa = rd(arr, i * 4); if (fa && rd(fa, 4) == id) return fa; }
@@ -409,7 +419,13 @@ static int exec_pre(Hook *h, Ctx *c, Frame *f) {
   const char *name = hashName(hh);
   g_execName = name; g_execLog = 1;
   u32 cur = rd(w, world_current);
-  u32 tg = taggedActor(batch, off, w);
+  u32 tagBuild = 0;
+  u32 tg = taggedActor(batch, off, w, &tagBuild);
+  if (tg && tagBuild != build_id() && !g_otherBuild) {
+    g_otherBuild = tagBuild ? tagBuild : 0xffff;
+    LOG("VERSION MISMATCH: %s runs a different Hybrid Co-op build (id 0x%04x, this PC: %s id 0x%04x) - "
+        "update the mod on both PCs, the games may go out of sync", label(tg), tagBuild, HC_VERSION, build_id());
+  }
   u32 actor = tg ? tg : cur;
   int shared = isHuman(cur) && rds(w, world_phase) == 1 && humansAliveOk(w);
   u32 negotiator = diplo.active;
@@ -584,11 +600,31 @@ static Hook HOOKS[] = {
 #define NHOOKS ((int)(sizeof HOOKS / sizeof HOOKS[0]))
 
 /* ================================================================ init */
+/* keep only the newest logs (names contain the date, so name order = age) */
+#define KEEP_LOGS 20
+static void prune_logs(const WCHAR *dir) {
+  static WCHAR names[256][64]; int n = 0;
+  WCHAR pat[MAX_PATH]; wcpy(pat, dir); wcat(pat, L"\\hybrid_*.log");
+  WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(pat, &fd);
+  if (h == INVALID_HANDLE_VALUE) return;
+  do { if (n < 256 && wlen(fd.cFileName) < 64) wcpy(names[n++], fd.cFileName); } while (FindNextFileW(h, &fd));
+  FindClose(h);
+  for (int i = 1; i < n; i++)                          /* insertion sort, oldest first */
+    for (int j = i; j > 0; j--) {
+      const WCHAR *a = names[j - 1], *b = names[j]; int k = 0;
+      while (a[k] && a[k] == b[k]) k++;
+      if (a[k] <= b[k]) break;
+      WCHAR t[64]; wcpy(t, names[j]); wcpy(names[j], names[j - 1]); wcpy(names[j - 1], t);
+    }
+  for (int i = 0; i + KEEP_LOGS - 1 < n; i++) { WCHAR p[MAX_PATH]; wcpy(p, dir); wcat(p, L"\\"); wcat(p, names[i]); DeleteFileW(p); }
+}
+
 static void open_log(void) {
   WCHAR la[MAX_PATH];
   if (!GetEnvironmentVariableW(L"LOCALAPPDATA", la, MAX_PATH)) return;
   wcpy(g_dir, la); wcat(g_dir, L"\\RomeHybridCoop"); CreateDirectoryW(g_dir, NULL);
   WCHAR p[MAX_PATH]; wcpy(p, g_dir); wcat(p, L"\\logs"); CreateDirectoryW(p, NULL);
+  prune_logs(p);
   SYSTEMTIME t; GetLocalTime(&t);
   char nm[64]; wsprintfA(nm, "\\hybrid_%04d%02d%02d_%02d%02d%02d.log", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
   WCHAR wn[64]; int i = 0; for (; nm[i]; i++) wn[i] = (WCHAR)nm[i]; wn[i] = 0;
@@ -602,7 +638,7 @@ __declspec(dllexport) int __cdecl HybridCoopStart(void) {
   g_started = 1;
   open_log();
   write_status("stage=off");
-  LOG("%s starting", VERSION_TEXT);
+  LOG("%s starting (build id 0x%04x)", VERSION_TEXT, build_id());
   u32 b = (u32)GetModuleHandleW(L"empire.retail.dll");
   if (!b) { LOG("empire.retail.dll not loaded - mod disabled"); return 0; }
   u32 pe = b + *(u32 *)(b + 0x3c), ts = *(u32 *)(pe + 8);

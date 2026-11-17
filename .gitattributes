@@ -1,0 +1,11 @@
+# Windows batch files must keep CRLF line endings (labels like :findgame break with LF)
+*.bat text eol=crlf
+*.c text eol=lf
+*.h text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.lua text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.dll binary
+*.pack binary

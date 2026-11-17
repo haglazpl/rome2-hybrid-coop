@@ -27,20 +27,22 @@ static int __cdecl enter_dispatch(Hook *h, Ctx *c) {
   if (h->on_leave) {
     FrameStack *s = frames();
     if (!s || s->n >= MAX_FRAMES) {            /* should never happen; run without the leave callback */
-      Frame tmp; mset(&tmp, 0, sizeof tmp); tmp.h = h; tmp.ra = *(u32 *)c->esp;
+      Frame tmp; mset(&tmp, 0, sizeof tmp); tmp.h = h; tmp.ra = *(u32 *)c->esp; tmp.esp = c->esp;
       int r = 0;
       if (h->on_enter) { EnterCriticalSection(&g_lock); r = h->on_enter(h, c, &tmp); LeaveCriticalSection(&g_lock); }
       return r;
     }
+    /* frames at or below this stack pointer belong to calls that never came back (left by a C++ exception) */
+    while (s->n > 0 && s->f[s->n - 1].esp <= c->esp) s->n--;
     Frame *f = &s->f[s->n++];                    /* reserve first: on_enter may call hooked game functions */
-    mset(f, 0, sizeof *f); f->h = h; f->ra = *(u32 *)c->esp;
+    mset(f, 0, sizeof *f); f->h = h; f->ra = *(u32 *)c->esp; f->esp = c->esp;
     int skip = 0;
     if (h->on_enter) { EnterCriticalSection(&g_lock); skip = h->on_enter(h, c, f); LeaveCriticalSection(&g_lock); }
     if (skip) { s->n--; return 1; }
     *(u32 *)c->esp = (u32)g_leave_stub;          /* return through the leave stub (like Frida's onLeave) */
     return 0;
   }
-  Frame tmp; mset(&tmp, 0, sizeof tmp); tmp.h = h; tmp.ra = *(u32 *)c->esp;
+  Frame tmp; mset(&tmp, 0, sizeof tmp); tmp.h = h; tmp.ra = *(u32 *)c->esp; tmp.esp = c->esp;
   int r = 0;
   if (h->on_enter) { EnterCriticalSection(&g_lock); r = h->on_enter(h, c, &tmp); LeaveCriticalSection(&g_lock); }
   return r;
@@ -49,6 +51,11 @@ static int __cdecl enter_dispatch(Hook *h, Ctx *c) {
 /* called from the shared leave stub: the slot above the context receives the real return address */
 static void __cdecl leave_dispatch(Ctx *c) {
   FrameStack *s = frames();
+  /* stack pointer after the hooked function returned: above our pushes (36 bytes) and the return slot (4) */
+  u32 sp = (u32)c + sizeof(Ctx) + 4;
+  /* frames of deeper calls that never returned (exception) sit on top: the right frame is the outermost one whose
+     entry stack pointer is below sp - every still-running outer call entered at or above sp */
+  while (s->n >= 2 && s->f[s->n - 2].esp < sp) s->n--;
   Frame *f = &s->f[--s->n];
   if (f->h->on_leave) { EnterCriticalSection(&g_lock); f->h->on_leave(f->h, c, f); LeaveCriticalSection(&g_lock); }
   *(u32 *)((u8 *)c + sizeof(Ctx)) = f->ra;

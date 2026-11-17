@@ -24,8 +24,11 @@ Then start or load a multiplayer co-op campaign as usual.
 - **Disabling:** disable the mod in the launcher and the loader does nothing. Delete `dinput8.dll` to remove it
   completely.
 - **Game updates:** after a ROME II update the mod switches itself off until it is updated, instead of crashing.
+- **Both players need the same version.** If they differ, the End Turn button shows "different mod versions":
+  let Steam update the mod on both PCs. Restarting the game makes Steam check for updates.
 
-Logs, which are useful for bug reports, are written to `%LOCALAPPDATA%\RomeHybridCoop` (`loader.log` and `logs\hybrid_*.log`).
+Logs, which are useful for bug reports, are written to `%LOCALAPPDATA%\RomeHybridCoop`: `loader.log`, plus
+`logs\hybrid_*.log`, of which the newest 20 are kept.
 
 ## Why a DLL, and is it safe?
 
@@ -55,7 +58,8 @@ tools/build.sh                        # -> out/dinput8.dll, out/hybrid_coop.dll
 ```
 
 The mod pack is built with `tools/build_pack.py`. It needs the game's own `lua_scripts/events.lua`, which is
-Creative Assembly's file and so is not included here.
+Creative Assembly's file and so is not included here: `tools/extract_events.py` copies it from your game. For
+the full release steps, see [RELEASING.md](RELEASING.md).
 
 ## How it works (short)
 

@@ -9,6 +9,9 @@
 #include "monocypher-ed25519.h"
 #include "pubkey.h"
 
+#ifndef HC_VERSION
+#define HC_VERSION "dev"
+#endif
 #define CORE_IN_PACK "hybrid_coop\\hybrid_coop.dll"
 #define SIG_IN_PACK "hybrid_coop\\hybrid_coop.dll.sig"
 
@@ -141,12 +144,17 @@ static int extract_and_load(const u8 *dll, DWORD size, const u8 *sig) {
     DWORD w = 0; WriteFile(h, dll, size, &w, NULL); CloseHandle(h);
     if (w != size || !MoveFileExW(tmp, dst, MOVEFILE_REPLACE_EXISTING)) { LOG("could not replace the core dll (in use by another game window?) - using the existing copy"); DeleteFileW(tmp); }
   }
-  /* check the file that will really be loaded (it may be an older copy if replacing failed) */
-  DWORD dsz = 0; u8 *disk = read_all(dst, &dsz);
-  int ok_disk = disk && dsz == size && signature_ok(disk, dsz, sig);
+  /* check the file that will really be loaded (it may be an older copy if replacing failed). The handle stays open
+     without write/delete sharing until the DLL is loaded, so nothing can swap the file between check and load. */
+  HANDLE lock = CreateFileW(dst, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (lock == INVALID_HANDLE_VALUE) { LOG("cannot open the core dll - not loaded"); return 0; }
+  DWORD dsz = GetFileSize(lock, NULL), got = 0;
+  u8 *disk = (dsz == size) ? (u8 *)HeapAlloc(GetProcessHeap(), 0, dsz) : NULL;
+  int ok_disk = disk && ReadFile(lock, disk, dsz, &got, NULL) && got == dsz && signature_ok(disk, dsz, sig);
   if (disk) HeapFree(GetProcessHeap(), 0, disk);
-  if (!ok_disk) { LOG("the core dll on disk does not match the signed one - not loaded"); return 0; }
+  if (!ok_disk) { CloseHandle(lock); LOG("the core dll on disk does not match the signed one - not loaded"); return 0; }
   HMODULE m = LoadLibraryW(dst);
+  CloseHandle(lock);
   if (!m) { LOG("LoadLibrary of the core dll failed"); return 0; }
   typedef int(__cdecl * StartFn)(void);
   StartFn start = (StartFn)GetProcAddress(m, "HybridCoopStart");
@@ -162,7 +170,7 @@ static void run(void) {
   wcpy(g_dir, la); wcat(g_dir, L"\\RomeHybridCoop"); CreateDirectoryW(g_dir, NULL);
   WCHAR lp[MAX_PATH]; wcpy(lp, g_dir); wcat(lp, L"\\loader.log");
   g_log = CreateFileW(lp, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-  LOG("hybrid co-op loader v2 (signed core only)");
+  LOG("Hybrid Co-op loader %s (loads only the signed co-op DLL)", HC_VERSION);
 
   WCHAR gd[MAX_PATH], mf[MAX_PATH]; char a[300];
   game_dir(gd); mods_file(gd, mf);
@@ -170,7 +178,8 @@ static void run(void) {
   DWORD size = 0; u8 *txt = read_all(mf, &size);
   if (!txt) { LOG("no mods file - mod not enabled, normal game"); return; }
 
-  /* parse: add_working_directory "X"; and mod "Y"; (ASCII/UTF-8 paths) */
+  /* parse: add_working_directory "X"; and mod "Y"; - paths are UTF-8 (letters like ł or é in folder names) */
+  if (size >= 3 && txt[0] == 0xEF && txt[1] == 0xBB && txt[2] == 0xBF) { txt[0] = txt[1] = txt[2] = ' '; }
   static WCHAR wdirs[16][MAX_PATH]; int nw = 0;
   static WCHAR mods[64][MAX_PATH]; int nm = 0;
   for (char *p = (char *)txt; *p;) {
@@ -182,7 +191,8 @@ static void run(void) {
     char *q2 = q1; while (*q2 && *q2 != '"') q2++; *q2 = 0;
     WCHAR *dst = isW ? (nw < 16 ? wdirs[nw++] : NULL) : (nm < 64 ? mods[nm++] : NULL);
     if (!dst) continue;
-    int i = 0; for (; q1[i] && i < MAX_PATH - 1; i++) dst[i] = (WCHAR)(u8)q1[i]; dst[i] = 0;
+    int n = MultiByteToWideChar(CP_UTF8, 8 /* MB_ERR_INVALID_CHARS */, q1, -1, dst, MAX_PATH);
+    if (n <= 0) { int i = 0; for (; q1[i] && i < MAX_PATH - 1; i++) dst[i] = (WCHAR)(u8)q1[i]; dst[i] = 0; }   /* not UTF-8: as bytes */
   }
   LOG("enabled mods: %d, extra mod folders: %d", nm, nw);
 

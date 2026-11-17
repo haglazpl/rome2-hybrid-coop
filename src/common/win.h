@@ -96,6 +96,8 @@ DLLIMPORT DWORD WINAPI GetCurrentThreadId(void);
 DLLIMPORT void WINAPI OutputDebugStringA(const char *);
 DLLIMPORT HANDLE WINAPI CreateThread(void *, uptr, DWORD(WINAPI *)(void *), void *, DWORD, DWORD *);
 DLLIMPORT void WINAPI Sleep(DWORD);
+DLLIMPORT int WINAPI MultiByteToWideChar(u32, DWORD, const char *, int, WCHAR *, int);
+#define CP_UTF8 65001
 /* user32 */
 DLLIMPORT int __cdecl wsprintfA(char *, const char *, ...);
 DLLIMPORT BOOL WINAPI MessageBeep(u32);

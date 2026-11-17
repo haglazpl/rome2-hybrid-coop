@@ -6,7 +6,7 @@
 typedef struct Ctx { u32 eflags, edi, esi, ebp, esp, ebx, edx, ecx, eax; } Ctx;   /* esp = value at the hook point */
 
 struct Hook;
-typedef struct Frame { struct Hook *h; u32 ra; u32 d[6]; } Frame;   /* per call (enter -> leave) */
+typedef struct Frame { struct Hook *h; u32 ra; u32 esp; u32 d[6]; } Frame;   /* per call (enter -> leave); esp = stack pointer at entry */
 typedef int (*EnterFn)(struct Hook *, Ctx *, Frame *);              /* return 1 = skip the original (ret N, eax from ctx) */
 typedef void (*LeaveFn)(struct Hook *, Ctx *, Frame *);
 
